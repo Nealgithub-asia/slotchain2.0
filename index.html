@@ -12,7 +12,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, addDoc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, addDoc, setDoc, onSnapshot, collection, query, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // Expose Firebase services to the global scope
         window.firebase = {
@@ -27,7 +27,6 @@
             getDoc,
             addDoc,
             setDoc,
-            updateDoc,
             onSnapshot,
             collection,
             query,
@@ -35,6 +34,9 @@
             getDocs
         };
     </script>
+
+    <!-- HashConnect SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/hashconnect@1.2.0/dist/main.js"></script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -748,8 +750,6 @@
                             </div>
                         </div>
                     </div>
-                    
-
                 </div>
             </div>
         </div>
@@ -806,7 +806,7 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">Expiry Date</label>
                             <input type="text" id="cardExpiry" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="MM/YY" required>
-                        </div>
+                    </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">CVV</label>
                             <input type="text" id="cardCvv" class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500" placeholder="123" required>
@@ -875,7 +875,7 @@
     </div>
 
     <script>
-        // Global variables for Firebase
+        // Global variables for Firebase and HashConnect
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -895,6 +895,15 @@
         let groomingStations = [];
         let stationCarousels = {};
         
+        let hashconnect = null;
+        let appMetadata = {
+            name: "SlotChain App",
+            description: "Book grooming services with crypto payments on Hedera.",
+            icon: "https://www.slotchain.com/icon.png"
+        };
+        let topic = localStorage.getItem("hashconnect_topic") || "";
+        let accountId = localStorage.getItem("hashconnect_accountId") || "";
+
         const PERPLEXITY_API_KEY = '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';
         const PERPLEXITY_API_URL = 'https://api.perplexity.ai/chat/completions';
 
@@ -945,7 +954,32 @@
                 initializeApp();
             }
         }
+        
+        // Asynchronous function to initialize HashConnect
+        async function initializeHashConnect() {
+            hashconnect = new HashConnect();
+            
+            // Check for an existing pairing
+            if (topic && accountId) {
+                console.log("Found existing pairing. Initializing with topic:", topic);
+                await hashconnect.init(appMetadata, topic);
+                hashconnect.connectToLocalWallet(topic, accountId);
+            } else {
+                console.log("No existing pairing. Initializing new one.");
+                hashconnect.init(appMetadata);
+            }
 
+            // Listen for pairing events
+            hashconnect.pairingEvent.on((pairingData) => {
+                console.log("Wallet paired:", pairingData);
+                topic = pairingData.topic;
+                accountId = pairingData.accountIds[0];
+                localStorage.setItem("hashconnect_topic", topic);
+                localStorage.setItem("hashconnect_accountId", accountId);
+                showNotification("Wallet connected successfully!", "success");
+            });
+        }
+        
         // Initialize the application after Firebase is ready
         function initializeApp() {
             // Set minimum date to today
@@ -976,7 +1010,7 @@
                 loadNFTCollection();
             });
         }
-
+        
         function setupEventListeners() {
             // Auth buttons
             document.getElementById('loginBtn').addEventListener('click', () => showAuthModal('login'));
@@ -1051,8 +1085,11 @@
             loadTimeSlots();
         }
 
-        // Initialize Firebase on window load
-        window.addEventListener('load', initializeFirebase);
+        // Initialize Firebase and HashConnect on window load
+        window.addEventListener('load', () => {
+            initializeFirebase();
+            initializeHashConnect();
+        });
 
         function showAuthModal(mode) {
             const modal = document.getElementById('authModal');
@@ -1131,6 +1168,16 @@
             try {
                 await firebase.signOut(auth);
                 currentUser = null;
+                
+                // Disconnect HashConnect wallet
+                if (hashconnect) {
+                    hashconnect.disconnect();
+                    localStorage.removeItem("hashconnect_topic");
+                    localStorage.removeItem("hashconnect_accountId");
+                    topic = "";
+                    accountId = "";
+                }
+                
                 updateAuthUI();
                 showMainContent();
                 showNotification('Logged out successfully');
@@ -1228,8 +1275,8 @@
                         
                         return {
                             id: `osm_${element.id || index}`,
-                            name: element.tags?.name || `Grooming Station ${index + 1}`,
-                            location: element.tags?.['addr:street'] || `Near ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
+                            stationName: element.tags?.name || `Grooming Station ${index + 1}`,
+                            address: element.tags?.['addr:street'] || `Near ${lat.toFixed(3)}, ${lon.toFixed(3)}`,
                             rating: (Math.random() * 1.5 + 3.5).toFixed(1),
                             user_ratings_total: Math.floor(Math.random() * 200) + 50,
                             price_level: Math.floor(Math.random() * 3) + 1,
@@ -1303,7 +1350,8 @@
                 phone: `(${Math.floor(Math.random() * 900) + 100}) ${Math.floor(Math.random() * 900) + 100}-${Math.floor(Math.random() * 9000) + 1000}`,
                 services: ["haircut", "beard-trim", "styling"],
                 features: getRandomFeatures(),
-                opening_hours: { open_now: Math.random() > 0.3 }
+                opening_hours: { open_now: Math.random() > 0.3 },
+                walletAddress: '0.0.' + (100000 + Math.floor(Math.random() * 900000))
             }));
         }
         
@@ -1827,36 +1875,55 @@
         }
 
         async function confirmHederaPayment() {
-            showNotification('Processing Hedera payment...', 'info');
+            if (!hashconnect || !topic || !accountId) {
+                showNotification("Please connect your wallet first. A pairing request will be sent.", "info");
+                // Trigger the wallet pairing process if not already connected
+                hashconnect.connectToLocalWallet();
+                return;
+            }
             
-            // Simulate a delay for the transaction
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
-            const serviceElement = document.getElementById('serviceSelect');
-            const bookingDetails = {
-                stationId: selectedStation.id,
-                stationName: selectedStation.stationName || selectedStation.name,
-                stationAddress: selectedStation.address || selectedStation.location,
-                service: serviceElement.options[serviceElement.selectedIndex].text,
-                date: document.getElementById('bookingDate').value,
-                time: selectedSlot,
-                amount: document.getElementById('totalAmount').textContent.replace('$', ''),
-                paymentMethod: 'hedera',
-                status: 'confirmed',
-                createdAt: new Date().toISOString(),
-                userId: userId
-            };
+            // Mock a Hedera TransferTransaction
+            const stationWalletAddress = selectedStation.walletAddress; 
+            const amountInHBAR = 10; // Mock amount for a demo transaction
             
-            const nftDetails = {
-                number: document.getElementById('nftNumber').textContent,
-                service: serviceElement.value,
-                date: bookingDetails.date,
-                rarity: Math.random() > 0.7 ? 'rare' : 'common',
-                createdAt: new Date().toISOString(),
-                ownerId: userId
-            };
+            showNotification(`Preparing Hedera transaction for ${amountInHBAR} HBAR...`, "info");
             
             try {
+                // Mock the HashConnect transaction sending process
+                // In a real app, you would use HashConnect's SDK to build and send the transaction
+                // For this mock, we just simulate the success with a delay
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                
+                // Simulate a successful transaction
+                console.log("Mock Hedera transaction successful!");
+
+                // Transaction was successful, now save to your backend
+                const serviceElement = document.getElementById('serviceSelect');
+                const bookingDetails = {
+                    stationId: selectedStation.id,
+                    stationName: selectedStation.stationName || selectedStation.name,
+                    stationAddress: selectedStation.address || selectedStation.location,
+                    service: serviceElement.options[serviceElement.selectedIndex].text,
+                    date: document.getElementById('bookingDate').value,
+                    time: selectedSlot,
+                    amount: document.getElementById('totalAmount').textContent.replace('$', ''),
+                    paymentMethod: 'hedera',
+                    status: 'confirmed',
+                    createdAt: new Date().toISOString(),
+                    userId: userId,
+                    transactionId: 'mock-hedera-tx-' + Date.now() 
+                };
+                
+                const nftDetails = {
+                    number: document.getElementById('nftNumber').textContent,
+                    service: serviceElement.value,
+                    date: bookingDetails.date,
+                    rarity: Math.random() > 0.7 ? 'rare' : 'common',
+                    createdAt: new Date().toISOString(),
+                    ownerId: userId,
+                    transactionId: bookingDetails.transactionId
+                };
+                
                 // Save booking and NFT to Firestore
                 const bookingRef = await firebase.addDoc(firebase.collection(db, `/artifacts/${appId}/users/${userId}/bookings`), bookingDetails);
                 const nftRef = await firebase.addDoc(firebase.collection(db, `/artifacts/${appId}/users/${userId}/nfts`), nftDetails);
@@ -1865,8 +1932,8 @@
                 showNotification(`Booking confirmed at ${selectedStation.stationName || selectedStation.name}! An exclusive NFT has been minted for you.`);
 
             } catch (error) {
-                console.error("Error confirming Hedera payment:", error);
-                showNotification('Error confirming payment. Please try again.', 'error');
+                console.error("Hedera payment error:", error);
+                showNotification("Hedera transaction failed. Please check your wallet.", "error");
             }
         }
         
@@ -1920,6 +1987,7 @@
         function loadDashboardData() {
             loadUpcomingBookings();
             loadBookingHistory();
+            loadNFTCollection();
         }
 
         function loadUpcomingBookings() {
